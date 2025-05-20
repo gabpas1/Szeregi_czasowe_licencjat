@@ -13,7 +13,11 @@ install.packages("httr")
 install.packages("dplyr")
 install.packages("jsonlite")
 install.packages("lubridate")
-
+install.packages("forecast")
+install.packages("urca")
+install.packages("prophet")
+install.packages("reticulate")
+reticulate::install_python()
 
 # Ładowanie bibliotek
 library(ggplot2)
@@ -22,14 +26,25 @@ library(httr)
 library(dplyr)
 library(jsonlite)
 library(lubridate)
+library(forecast)
+library(urca)
+library(prophet)
+library(reticulate)
+library(prophet)
 
 # ------------------------------------------------------------------------------
 # 2. Pobieranie danych pogodowych z API Open-Meteo
 # ------------------------------------------------------------------------------
 
-#Definiowanie danych 
+# Definiowanie parametrów zapytania do API 
 url <- "https://archive-api.open-meteo.com/v1/archive"
+latitude <- 52.4064  # Szerokość geograficzna Poznania
+longitude <- 16.9252 # Długość geograficzna Poznania
+start_date <- "2014-01-01"
+end_date <- "2024-12-31"
+hourly_data <- "temperature_2m,relative_humidity_2m,precipitation,soil_temperature_0_to_7cm"
 
+# Funkcja do pobierania danych pogodowych
 get_weather_data <- function(latitude, longitude, start_date, end_date, hourly_data) {
   params <- list(
     latitude = latitude,
@@ -63,21 +78,26 @@ get_weather_data <- function(latitude, longitude, start_date, end_date, hourly_d
   }
 }
 
-latitude <- 52.4064  # Szerokość geograficzna Poznania
-longitude <- 16.9252 # Długość geograficzna Poznania
-start_date <- "2014-01-01"
-end_date <- "2024-12-31"
-hourly_data <- "temperature_2m,relative_humidity_2m,precipitation,soil_temperature_0_to_7cm"
-
+# Pobranie danych pogodowych
 weather_data <- get_weather_data(latitude, longitude, start_date, end_date, hourly_data)
 
+# Wyświetlenie pierwszych wierszy pobranych danych
+print("Pierwsze wiersze pobranych danych:")
 print(head(weather_data))
 
-# Analiza opisowa
+# ------------------------------------------------------------------------------
+# 3. Analiza opisowa danych
+# ------------------------------------------------------------------------------
+
+print("\nPodsumowanie statystyczne danych godzinowych:")
 summary(weather_data)
 
-# Agregacja miesięczna 
 
+# ------------------------------------------------------------------------------
+# 4. Agregacja danych
+# ------------------------------------------------------------------------------
+
+# Agregacja miesięczna 
 monthly_data <- weather_data %>%
   mutate(year_month = format(date, "%Y-%m")) %>%
   group_by(year_month) %>%
@@ -110,7 +130,12 @@ yearly_data <- weather_data %>%
 print("Roczne statystyki:")
 print(head(yearly_data))
 
-#Wykresy przebiegu czasowego (godzinowo)
+# ------------------------------------------------------------------------------
+# 5. Wizualizacja danych
+# ------------------------------------------------------------------------------
+
+# 5.1. Wykresy przebiegu czasowego (godzinowo)
+print("Wykresy godzinowe:")
 
 plot_temp_hourly <- ggplot(weather_data, aes(x = date, y = temperature_2m)) +
   geom_line() +
@@ -136,7 +161,8 @@ plot_soil_temp_hourly <- ggplot(weather_data, aes(x = date, y = soil_temperature
   theme_minimal()
 print(plot_soil_temp_hourly)
 
-# Wykresy przebiegu czasowego (miesięcznie)
+# 5.2. Wykresy przebiegu czasowego (miesięcznie)
+print("Wykresy miesięczne:")
 
 plot_temp_monthly <- ggplot(monthly_data, aes(x = year_month, y = avg_temp)) +
   geom_line(group = 1) +
@@ -153,7 +179,9 @@ plot_precipitation_monthly <- ggplot(monthly_data, aes(x = year_month, y = total
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 print(plot_precipitation_monthly)
 
-# Dane roczne
+# 5.3. Dane i wykresy roczne
+print("Dane i wykresy roczne:")
+
 # Najcieplejszy roku:
 hottest_year <- yearly_data %>% arrange(desc(avg_temp)) %>% head(1)
 print(paste("Najcieplejszy rok:", hottest_year$year, "ze średnią temperaturą:", round(hottest_year$avg_temp, 2), "°C"))
@@ -188,7 +216,6 @@ yearly_min_temp_plot <- ggplot(yearly_data, aes(x = year, y = min_temp)) +
 print(yearly_min_temp_plot)
 
 # Maksymalna roczna temperatura
-
 yearly_max_temp_plot <- ggplot(yearly_data, aes(x = year, y = max_temp)) +
   geom_bar(stat = "identity", fill = "steelblue") +
   labs(title = "Maksymalna roczna temperatura w Poznaniu (2014-2024)", x = "Rok", y = "Maksymalna temperatura (°C)") +
@@ -212,11 +239,10 @@ yearly_soil_temp_plot <- ggplot(yearly_data, aes(x = year, y = avg_soil_temp)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 print(yearly_soil_temp_plot)
 
-#NeuralProphet:
-install.packages("reticulate")
-reticulate::install_python()
+# ------------------------------------------------------------------------------
+# 6. Modelowanie szeregów czasowych - NeuralProphet
+# ------------------------------------------------------------------------------
 
-library(reticulate)
 np <- import("neuralprophet")
 
 df_prophet <- weather_data %>% select(date, temperature_2m, relative_humidity_2m, precipitation)
@@ -234,13 +260,25 @@ print(plot_forecast_np_regressors)
 plot_components_np_regressors <- model_np_regressors$plot_components(forecast_regressors, df_prophet)
 print(plot_components_np_regressors)
 
-#ARIMA
+# ------------------------------------------------------------------------------
+# 7. Modelowanie szeregów czasowych - Klasyczny Prophet
+# ------------------------------------------------------------------------------
 
-install.packages("forecast")
-install.packages("urca")
+df_prophet <- weather_data %>% select(date, temperature_2m)
+colnames(df_prophet) <- c("ds", "y")  # Prophet wymaga kolumny 'ds' (data) i 'y' (wartość)
+model_prophet <- prophet(df_prophet)
 
-library(forecast)
-library(urca)
+#Prognoza 
+future <- make_future_dataframe(model_prophet, periods = 168, freq = "hour")  # 7 dni po 24 godzinach
+forecast <- predict(model_prophet, future)
+
+
+print(forecas)
+#plot(model_prophet, forecast)
+
+# ------------------------------------------------------------------------------
+# 8. Modelowanie szeregów czasowych - ARIMA
+# ------------------------------------------------------------------------------
 
 weather_data$date <- as.Date(weather_data$date)
 temperature_data <- weather_data$temperature_2m
@@ -258,35 +296,66 @@ adf_test_trend <- ur.df(temperature_data, type = "trend", lags = 12)
 print("Test ADF (ze stałą i trendem):")
 print(summary(adf_test_trend))
 
-# Sprawdzenie stacjonarności i różnicowanie (z uwzględnieniem różnych poziomów istotności)
+# Poprawiona funkcja sprawdzająca stacjonarność
 is_stationary <- function(adf_result, alpha = 0.05) {
-  critical_values <- as.numeric(gsub("%", "", rownames(adf_result@cval))) / 100
-  closest_alpha_index <- which.min(abs(critical_values - alpha))
-  critical_value <- adf_result@cval[closest_alpha_index, 1]
-  return(adf_result@teststat[1] <= critical_value)
+  cval <- adf_result@cval
+  # Upewnij się, że wartości krytyczne mają poprawne nazwy wierszy
+  if (is.null(rownames(cval))) {
+    warning("Brak nazw poziomów istotności w adf_result@cval.")
+    return(FALSE)
+  }
+  
+  available_alphas <- as.numeric(gsub("%", "", rownames(cval))) / 100
+  closest_index <- which.min(abs(available_alphas - alpha))
+  
+  # Sprawdzenie poprawności indeksu i wartości
+  if (length(closest_index) == 0 || is.na(adf_result@teststat[1])) {
+    warning("Brak odpowiedniego poziomu istotności lub wartości testu ADF.")
+    return(FALSE)
+  }
+  
+  critical_value <- cval[closest_index, 1]
+  test_stat <- adf_result@teststat[1]
+  
+  return(test_stat < critical_value)
 }
 
+# Przygotowanie do różnicowania
 temp_data_stationary <- temperature_data
 diff_count <- 0
-max_diff <- 2 # Maksymalna liczba różnicowań
+max_diff <- 2  # Maksymalna liczba różnicowań
 
-while (!is_stationary(ur.df(temp_data_stationary, type = "drift", lags = 12)) && diff_count < max_diff) {
+# Automatyczne różnicowanie aż do stacjonarności lub do limitu
+while (!is_stationary(ur.df(na.omit(temp_data_stationary), type = "drift", lags = 12)) &&
+       diff_count < max_diff) {
+  
+  print(paste("ADF test, różnicowanie =", diff_count))
+  
   temp_data_stationary <- diff(temp_data_stationary)
+  temp_data_stationary <- na.omit(temp_data_stationary)
   diff_count <- diff_count + 1
+  
   print(paste("Dane zostały zróżnicowane po raz", diff_count))
 }
 
+# Komunikat końcowy
 if (diff_count == 0) {
   print("Dane są prawdopodobnie stacjonarne.")
+} else {
+  print(paste("Ostateczny poziom różnicowania:", diff_count))
 }
 
 # Automatyczne dopasowanie modelu ARIMA
 arima_model <- auto.arima(temp_data_stationary)
 print(summary(arima_model))
-tsdiag(arima_model) # Diagnostyka reszt
+
+# Diagnostyka reszt
+par(mar = c(4, 4, 2, 1))  # dolny, lewy, górny, prawy
+tsdiag(arima_model)
+
 
 # Prognozowanie
-forecasted_values <- forecast(arima_model, h = 168)
+forecasted_values <- forecast::forecast(arima_model, h = 168)
 print(forecasted_values)
 
 # Wizualizacja
@@ -297,14 +366,18 @@ plot(forecasted_values,
      col = "blue",
      fcol = "red",
      flwd = 2,
-     shadecols = "lightgray")
+     shadecols = "lightgray",
+     cex.main = 1.2,
+     cex.lab = 1.1,
+     cex.axis = 1.0,
+     lwd = 1.5,
+     ylim = range(c(forecasted_values$lower, forecasted_values$upper, temperature_data)) # Dostosowanie zakresu Y
+)
 
-#Model ETS
 
-install.packages("forecast")
-library(forecast)
-library(ggplot2)
-library(lubridate)
+# ------------------------------------------------------------------------------
+# 9. Modelowanie szeregów czasowych - Model ETS
+# ------------------------------------------------------------------------------
 
 temperature_data_ts <- ts(weather_data$temperature_2m, frequency = 24)
 
@@ -345,22 +418,6 @@ plot_ets_zoomed <- ggplot() +
 
 print(plot_ets_zoomed)
 
-# Klasyczny Prophet
-install.packages("prophet")
-library(prophet)
-library(dplyr)
-
-df_prophet <- weather_data %>% select(date, temperature_2m)
-colnames(df_prophet) <- c("ds", "y")  # Prophet wymaga kolumny 'ds' (data) i 'y' (wartość)
-model_prophet <- prophet(df_prophet)
-
-#Prognoza 
-future <- make_future_dataframe(model_prophet, periods = 168, freq = "hour")  # 7 dni po 24 godzinach
-forecast <- predict(model_prophet, future)
-
-
-print(forecas)
-#plot(model_prophet, forecast)
 
 
 
