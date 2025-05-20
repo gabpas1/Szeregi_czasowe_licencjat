@@ -132,6 +132,7 @@ future <- make_future_dataframe(model_prophet, periods = 168, freq = "hour")  # 
 forecast <- predict(model_prophet, future)
 
 print(forecas)
+print(dupa123)
 #plot(model_prophet, forecast)
 
 
