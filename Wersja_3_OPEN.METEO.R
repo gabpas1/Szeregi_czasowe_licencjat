@@ -245,7 +245,7 @@ yearly_soil_temp_plot <- ggplot(yearly_data, aes(x = year, y = avg_soil_temp)) +
 print(yearly_soil_temp_plot)
 
 # ------------------------------------------------------------------------------
-# 6. Modelowanie szeregów czasowych - NeuralProphet Nie skończony :(
+# 6. Modelowanie szeregów czasowych - NeuralProphet Nieskończony :(
 # ------------------------------------------------------------------------------
 
 np <- import("neuralprophet")
