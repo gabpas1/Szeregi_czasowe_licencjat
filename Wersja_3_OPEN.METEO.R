@@ -7,17 +7,23 @@
 # ------------------------------------------------------------------------------
 
 # Instalacja pakietów
-install.packages("ggplot2")
-install.packages("ggfortify")
-install.packages("httr")
-install.packages("dplyr")
-install.packages("jsonlite")
-install.packages("lubridate")
-install.packages("forecast")
-install.packages("urca")
-install.packages("prophet")
-install.packages("reticulate")
-reticulate::install_python()
+# install.packages("ggplot2")
+# install.packages("ggfortify")
+# install.packages("httr")
+# install.packages("dplyr")
+# install.packages("jsonlite")
+# install.packages("lubridate")
+# install.packages("forecast")
+# install.packages("urca")
+# install.packages("prophet")
+# install.packages("reticulate")
+# reticulate::install_python()
+# reticulate::py_install("neuralprophet", upgrade = TRUE)
+
+# Ustawienie Pythona dla reticulate
+library(reticulate)
+use_python("/Library/Frameworks/Python.framework/Versions/3.13/bin/python3")
+py_config()
 
 # Ładowanie bibliotek
 library(ggplot2)
@@ -29,8 +35,7 @@ library(lubridate)
 library(forecast)
 library(urca)
 library(prophet)
-library(reticulate)
-library(prophet)
+#library(neuralprophet)
 
 # ------------------------------------------------------------------------------
 # 2. Pobieranie danych pogodowych z API Open-Meteo
@@ -89,7 +94,7 @@ print(head(weather_data))
 # 3. Analiza opisowa danych
 # ------------------------------------------------------------------------------
 
-print("\nPodsumowanie statystyczne danych godzinowych:")
+print("Podsumowanie statystyczne danych godzinowych:")
 summary(weather_data)
 
 
@@ -240,7 +245,7 @@ yearly_soil_temp_plot <- ggplot(yearly_data, aes(x = year, y = avg_soil_temp)) +
 print(yearly_soil_temp_plot)
 
 # ------------------------------------------------------------------------------
-# 6. Modelowanie szeregów czasowych - NeuralProphet
+# 6. Modelowanie szeregów czasowych - NeuralProphet Nie skończony :(
 # ------------------------------------------------------------------------------
 
 np <- import("neuralprophet")
@@ -248,17 +253,12 @@ np <- import("neuralprophet")
 df_prophet <- weather_data %>% select(date, temperature_2m, relative_humidity_2m, precipitation)
 colnames(df_prophet) <- c("ds", "y", "relative_humidity_2m", "precipitation")
 
-model_np_regressors <- np$NeuralProphet(yearly_seasonality = TRUE, weekly_seasonality = TRUE)
+model_np_regressors <- np$NeuralProphet(
+  yearly_seasonality = TRUE,
+  weekly_seasonality = TRUE,
+  regressors = c("relative_humidity_2m", "precipitation")
+)
 metrics_regressors <- model_np_regressors$fit(df_prophet, freq = "H")
-
-future_regressors <- model_np_regressors$make_future_dataframe(df_prophet, periods = 168, regressors = TRUE, freq = "H")
-forecast_regressors <- model_np_regressors$predict(future_regressors)
-
-plot_forecast_np_regressors <- plot(forecast_regressors, df_prophet)
-print(plot_forecast_np_regressors)
-
-plot_components_np_regressors <- model_np_regressors$plot_components(forecast_regressors, df_prophet)
-print(plot_components_np_regressors)
 
 # ------------------------------------------------------------------------------
 # 7. Modelowanie szeregów czasowych - Klasyczny Prophet
@@ -268,13 +268,42 @@ df_prophet <- weather_data %>% select(date, temperature_2m)
 colnames(df_prophet) <- c("ds", "y")  # Prophet wymaga kolumny 'ds' (data) i 'y' (wartość)
 model_prophet <- prophet(df_prophet)
 
-#Prognoza 
-future <- make_future_dataframe(model_prophet, periods = 168, freq = "hour")  # 7 dni po 24 godzinach
+#Prognoza
+future <- make_future_dataframe(model_prophet, periods = 168, freq = "hour")
 forecast <- predict(model_prophet, future)
 
 
-print(forecas)
-#plot(model_prophet, forecast)
+print("Prognoza temperatury na najbliższe 7 dni (godzinowo) przy użyciu modelu Prophet:")
+print(head(forecast))
+
+# Wykres prognozy z danymi historycznymi
+plot_forecast_prophet <- plot(model_prophet, forecast)
+print(plot_forecast_prophet)
+
+# Wykres prognozy bez danych historycznych
+last_historical_date <- max(df_prophet$ds)
+start_forecast_date <- last_historical_date + hours(1)
+
+
+forecast_future <- forecast %>%
+  filter(ds >= start_forecast_date)
+
+
+plot_future_forecast <- ggplot(forecast_future, aes(x = ds, y = yhat)) +
+  geom_line(color = "blue") +
+  geom_ribbon(aes(ymin = yhat_lower, ymax = yhat_upper), fill = "lightblue", alpha = 0.3) +
+  labs(
+    title = "Prognoza temperatury na najbliższe 7 dni (bez danych historycznych)",
+    x = "Data",
+    y = "Temperatura (°C)"
+  ) +
+  theme_minimal()
+
+print(plot_future_forecast)
+
+# Trend i sezonowość (roczna, tygodniowa, dobowa)
+plot_components_prophet <- prophet_plot_components(model_prophet, forecast)
+print(plot_components_prophet)
 
 # ------------------------------------------------------------------------------
 # 8. Modelowanie szeregów czasowych - ARIMA
@@ -296,10 +325,10 @@ adf_test_trend <- ur.df(temperature_data, type = "trend", lags = 12)
 print("Test ADF (ze stałą i trendem):")
 print(summary(adf_test_trend))
 
-# Poprawiona funkcja sprawdzająca stacjonarność
+# Funkcja sprawdzająca stacjonarność
 is_stationary <- function(adf_result, alpha = 0.05) {
   cval <- adf_result@cval
-  # Upewnij się, że wartości krytyczne mają poprawne nazwy wierszy
+
   if (is.null(rownames(cval))) {
     warning("Brak nazw poziomów istotności w adf_result@cval.")
     return(FALSE)
@@ -384,7 +413,7 @@ temperature_data_ts <- ts(weather_data$temperature_2m, frequency = 24)
 ets_model <- ets(temperature_data_ts)
 forecast_ets <- forecast(ets_model, h = 168)
 
-# ramka danych dla prognozy ETS
+# Ramka danych dla prognozy ETS
 forecast_ets_df <- data.frame(
   date = seq(from = tail(weather_data$date, 1) + hours(1), by = "hour", length.out = 168),
   forecast = as.numeric(forecast_ets$mean),
@@ -394,12 +423,27 @@ forecast_ets_df <- data.frame(
   upper_95 = as.numeric(forecast_ets$upper[, "95%"])
 )
 
-# zakresu dat dla wykresu - skupienie na ostatnich danych i prognozie
+# Zakresu dat dla wykresu - skupienie na ostatnich danych i prognozie
 last_history_date <- tail(weather_data$date, 1)
 start_plot_date <- last_history_date - days(30) #ostatnie 30 dni historii
 end_plot_date <- tail(forecast_ets_df$date, 1)
 
-# Wykres prognozy ETS z przybliżeniem
+# Kolumny w weather_data muszą być klasy POSIXct
+if (!inherits(weather_data$date, "POSIXct")) {
+  weather_data$date <- as.POSIXct(weather_data$date)
+}
+
+if (!inherits(forecast_ets_df$date, "POSIXct")) {
+  forecast_ets_df$date <- as.POSIXct(forecast_ets_df$date)
+}
+
+if (!inherits(start_plot_date, "POSIXct")) {
+  start_plot_date <- as.POSIXct(start_plot_date)
+}
+if (!inherits(end_plot_date, "POSIXct")) {
+  end_plot_date <- as.POSIXct(end_plot_date)
+}
+
 plot_ets_zoomed <- ggplot() +
   geom_line(data = subset(weather_data, date >= start_plot_date & date <= last_history_date),
             aes(x = date, y = temperature_2m), color = "blue", linewidth = 0.5) +
@@ -417,7 +461,3 @@ plot_ets_zoomed <- ggplot() +
         legend.position = "none")
 
 print(plot_ets_zoomed)
-
-
-
-
