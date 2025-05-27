@@ -1,5 +1,5 @@
 # ------------------------------------------------------------------------------
-# Praca Licencjacka - Analiza Danych Pogodowych 
+# Praca Licencjacka - Analiza Danych Pogodowych
 # ------------------------------------------------------------------------------
 
 # ------------------------------------------------------------------------------
@@ -18,11 +18,11 @@
 # install.packages("prophet")
 # install.packages("reticulate")
 # reticulate::install_python()
-# reticulate::py_install("neuralprophet", upgrade = TRUE)
+#reticulate::py_install("neuralprophet", upgrade = TRUE)
 
 # Ustawienie Pythona dla reticulate
 library(reticulate)
-use_python("/Library/Frameworks/Python.framework/Versions/3.13/bin/python3")
+use_python(Sys.which("python3"))
 py_config()
 
 # Ładowanie bibliotek
@@ -35,7 +35,7 @@ library(lubridate)
 library(forecast)
 library(urca)
 library(prophet)
-#library(neuralprophet)
+library(neuralprophet)
 
 # ------------------------------------------------------------------------------
 # 2. Pobieranie danych pogodowych z API Open-Meteo
@@ -64,9 +64,19 @@ get_weather_data <- function(latitude, longitude, start_date, end_date, hourly_d
   if (status_code(response) == 200) {
     data <- fromJSON(content(response, "text"), flatten = TRUE)
     
+    # Zmiana: Sprawdzenie, czy 'data' i 'data$hourly' istnieją
+    if (is.null(data$hourly)) {
+      stop("Odpowiedź z API nie zawiera oczekiwanych danych godzinowych ('data$hourly').")
+    }
+    
     df <- as.data.frame(data$hourly)
     
-    df$date <- ymd_hm(df$time)
+    # Zmiana: Walidacja formatu daty
+    tryCatch({
+      df$date <- ymd_hm(df$time)
+    }, error = function(e) {
+      stop("Nieprawidłowy format daty w danych z API. Sprawdź strukturę 'df$time'.")
+    })
     
     if (any(is.na(df$date))) {
       print("Błąd konwersji daty. Sprawdzam strukturę danych...")
@@ -89,6 +99,10 @@ weather_data <- get_weather_data(latitude, longitude, start_date, end_date, hour
 # Wyświetlenie pierwszych wierszy pobranych danych
 print("Pierwsze wiersze pobranych danych:")
 print(head(weather_data))
+
+# Sprawdzenie brakujących danych na wczesnym etapie
+print("Liczba brakujących wartości w każdej kolumnie po pobraniu danych:")
+print(sapply(weather_data, function(x) sum(is.na(x))))
 
 # ------------------------------------------------------------------------------
 # 3. Analiza opisowa danych
@@ -248,139 +262,165 @@ print(yearly_soil_temp_plot)
 # 6. Modelowanie szeregów czasowych - NeuralProphet Nieskończony :(
 # ------------------------------------------------------------------------------
 
-np <- import("neuralprophet")
+np <- reticulate::import("neuralprophet")
+pd <- reticulate::import("pandas", convert = FALSE)
 
-df_prophet <- weather_data %>% select(date, temperature_2m, relative_humidity_2m, precipitation)
-colnames(df_prophet) <- c("ds", "y", "relative_humidity_2m", "precipitation")
+df_prophet_np <- weather_data %>%
+  select(date, temperature_2m, relative_humidity_2m, precipitation) %>%
+  rename(ds = date, y = temperature_2m, relative_humidity = relative_humidity_2m, precipitation = precipitation)
 
-model_np_regressors <- np$NeuralProphet(
+# Przekonwertuj DataFrame R na DataFrame Pandas
+df_prophet_np_pd <- reticulate::r_to_py(df_prophet_np)
+
+# Jawna konwersja kolumny 'ds' na datetime64[ns]
+df_prophet_np_pd$ds <- pd$to_datetime(df_prophet_np_pd$ds)
+
+# Inicjalizacja i dopasowanie modelu NeuralProphet z regresorami
+model_np <- np$NeuralProphet(
+  growth = "linear",
   yearly_seasonality = TRUE,
   weekly_seasonality = TRUE,
-  regressors = c("relative_humidity_2m", "precipitation")
+  daily_seasonality = TRUE
 )
-metrics_regressors <- model_np_regressors$fit(df_prophet, freq = "H")
+# Dodanie regresorów
+model_np$add_regressor("relative_humidity", standardize = "auto")
+model_np$add_regressor("precipitation", standardize = "auto")
+
+metrics_np <- model_np$fit(df_prophet_np_pd, freq = "H")
+print(metrics_np)
+# Tworzenie przyszłych danych
+future_np_pd <- model_np$make_future_dataframe(df_prophet_np_pd, periods = 168)
+
+# Prognozowanie
+forecast_np_pd <- model_np$predict(future_np_pd)
+
+# Konwersja wyników Pandas DataFrame z powrotem do R DataFrame
+forecast_np <- reticulate::py_to_r(forecast_np_pd)
+
+print("Prognoza temperatury na najbliższe 7 dni (godzinowo) przy użyciu modelu NeuralProphet z regresorami:")
+print(head(forecast_np))
+
+# Wizualizacja
+plot_forecast_np <- np$plot(forecast_np_pd)
+print(plot_forecast_np)
+
+plot_components_np <- np$plot_components(forecast_np_pd)
+print(plot_components_np)
 
 # ------------------------------------------------------------------------------
 # 7. Modelowanie szeregów czasowych - Klasyczny Prophet
 # ------------------------------------------------------------------------------
 
-df_prophet <- weather_data %>% select(date, temperature_2m)
-colnames(df_prophet) <- c("ds", "y")  # Prophet wymaga kolumny 'ds' (data) i 'y' (wartość)
-model_prophet <- prophet(df_prophet)
+df_prophet_p <- weather_data %>% select(date, temperature_2m)
+colnames(df_prophet_p) <- c("ds", "y")  # Prophet wymaga kolumny 'ds' (data) i 'y' (wartość)
+model_prophet <- prophet(df_prophet_p)
 
 #Prognoza
-future <- make_future_dataframe(model_prophet, periods = 168, freq = "hour")
-forecast <- predict(model_prophet, future)
+future_p <- make_future_dataframe(model_prophet, periods = 168, freq = "hour")
+forecast_p <- predict(model_prophet, future_p)
 
 
 print("Prognoza temperatury na najbliższe 7 dni (godzinowo) przy użyciu modelu Prophet:")
-print(head(forecast))
+print(head(forecast_p))
 
 # Wykres prognozy z danymi historycznymi
-plot_forecast_prophet <- plot(model_prophet, forecast)
+plot_forecast_prophet <- plot(model_prophet, forecast_p)
 print(plot_forecast_prophet)
 
 # Wykres prognozy bez danych historycznych
-last_historical_date <- max(df_prophet$ds)
-start_forecast_date <- last_historical_date + hours(1)
+last_historical_date_p <- max(df_prophet_p$ds)
+start_forecast_date_p <- last_historical_date_p + hours(1)
 
 
-forecast_future <- forecast %>%
-  filter(ds >= start_forecast_date)
-
-
-plot_future_forecast <- ggplot(forecast_future, aes(x = ds, y = yhat)) +
-  geom_line(color = "blue") +
-  geom_ribbon(aes(ymin = yhat_lower, ymax = yhat_upper), fill = "lightblue", alpha = 0.3) +
-  labs(
-    title = "Prognoza temperatury na najbliższe 7 dni (bez danych historycznych)",
-    x = "Data",
-    y = "Temperatura (°C)"
-  ) +
-  theme_minimal()
-
-print(plot_future_forecast)
+forecast_future_p <- forecast_p %>%
+  filter(ds >= start_forecast_date_p)
 
 # Trend i sezonowość (roczna, tygodniowa, dobowa)
-plot_components_prophet <- prophet_plot_components(model_prophet, forecast)
+plot_components_prophet <- prophet_plot_components(model_prophet, forecast_p)
 print(plot_components_prophet)
 
 # ------------------------------------------------------------------------------
 # 8. Modelowanie szeregów czasowych - ARIMA
 # ------------------------------------------------------------------------------
 
-weather_data$date <- as.Date(weather_data$date)
-temperature_data <- weather_data$temperature_2m
+# Zmiana:Nie konwertuję daty na Date, zachowujemy POSIXct
+temperature_data_arima <- weather_data$temperature_2m
 
-# Test ADF z różnymi typami i liczbą opóźnień
-adf_test_none <- ur.df(temperature_data, type = "none", lags = 12)
-print("Test ADF (brak stałej i trendu):")
-print(summary(adf_test_none))
-
-adf_test_drift <- ur.df(temperature_data, type = "drift", lags = 12)
-print("Test ADF (ze stałą):")
-print(summary(adf_test_drift))
-
-adf_test_trend <- ur.df(temperature_data, type = "trend", lags = 12)
-print("Test ADF (ze stałą i trendem):")
-print(summary(adf_test_trend))
-
-# Funkcja sprawdzająca stacjonarność
-is_stationary <- function(adf_result, alpha = 0.05) {
-  cval <- adf_result@cval
-
-  if (is.null(rownames(cval))) {
-    warning("Brak nazw poziomów istotności w adf_result@cval.")
-    return(FALSE)
+# Funkcja sprawdzająca stacjonarność (z automatycznym wyborem opóźnień)
+is_stationary_adf <- function(ts, alpha = 0.05) {
+  if (length(na.omit(ts)) < 2) {
+    warning("Zbyt mało danych do przeprowadzenia testu ADF.")
+    return(FALSE) # Uznaję za niestacjonarne, aby uniknąć błędów
+  }
+  adf_result <- tryCatch({
+    ur.df(ts, type = "drift", selectlags = "AIC")
+  }, error = function(e) {
+    warning(paste("Błąd podczas wykonywania ur.df:", e$message))
+    return(NULL) # W przypadku błędu zwracam NULL
+  })
+  
+  if (is.null(adf_result) || any(is.na(adf_result@teststat)) || is.null(adf_result@cval)) {
+    warning("Nie można było przeprowadzić testu ADF lub brak wyników.")
+    return(FALSE) # Uznaję za niestacjonarne
   }
   
-  available_alphas <- as.numeric(gsub("%", "", rownames(cval))) / 100
-  closest_index <- which.min(abs(available_alphas - alpha))
-  
-  # Sprawdzenie poprawności indeksu i wartości
-  if (length(closest_index) == 0 || is.na(adf_result@teststat[1])) {
-    warning("Brak odpowiedniego poziomu istotności lub wartości testu ADF.")
-    return(FALSE)
+  critical_value_row <- rownames(adf_result@cval) == paste0(alpha * 100, "%")
+  if (!any(critical_value_row)) {
+    warning(paste("Nie znaleziono wartości krytycznej dla alpha =", alpha))
+    return(FALSE) # Uznaję za niestacjonarne
   }
-  
-  critical_value <- cval[closest_index, 1]
+  critical_value <- adf_result@cval[critical_value_row, 1]
   test_stat <- adf_result@teststat[1]
   
   return(test_stat < critical_value)
 }
 
 # Przygotowanie do różnicowania
-temp_data_stationary <- temperature_data
+temp_data_stationary <- temperature_data_arima
 diff_count <- 0
 max_diff <- 2  # Maksymalna liczba różnicowań
 
 # Automatyczne różnicowanie aż do stacjonarności lub do limitu
-while (!is_stationary(ur.df(na.omit(temp_data_stationary), type = "drift", lags = 12)) &&
-       diff_count < max_diff) {
-  
-  print(paste("ADF test, różnicowanie =", diff_count))
-  
+while (!is_stationary_adf(na.omit(temp_data_stationary)) && diff_count < max_diff) {
+  print(paste("Test ADF (AIC), różnicowanie =", diff_count))
   temp_data_stationary <- diff(temp_data_stationary)
   temp_data_stationary <- na.omit(temp_data_stationary)
   diff_count <- diff_count + 1
-  
   print(paste("Dane zostały zróżnicowane po raz", diff_count))
 }
 
-# Komunikat końcowy
-if (diff_count == 0) {
-  print("Dane są prawdopodobnie stacjonarne.")
+# Zmiana: Ostrzeżenie, jeśli nie osiągnięto stacjonarności
+if (!is_stationary_adf(na.omit(temp_data_stationary))) {
+  warning("Nie osiągnięto stacjonarności szeregu czasowego temperatury po maksymalnie ", max_diff, " różnicowaniach (test ADF z AIC).")
+} else if (diff_count == 0) {
+  print("Dane są prawdopodobnie stacjonarne (test ADF z AIC).")
 } else {
-  print(paste("Ostateczny poziom różnicowania:", diff_count))
+  print(paste("Ostateczny poziom różnicowania:", diff_count, "(test ADF z AIC)."))
 }
 
 # Automatyczne dopasowanie modelu ARIMA
+# Zmiana (Sugestia 5b): Nie ustawiamy stałej liczby opóźnień w ur.df, auto.arima sam dobierze p, d, q
 arima_model <- auto.arima(temp_data_stationary)
 print(summary(arima_model))
 
 # Diagnostyka reszt
 par(mar = c(4, 4, 2, 1))  # dolny, lewy, górny, prawy
 tsdiag(arima_model)
+
+# Dodatkowa analiza reszt
+# Test Ljung-Box na autokorelację reszt (do 24 opóźnień dla danych godzinowych)
+box_test_result <- Box.test(arima_model$residuals, lag = 24, type = "Ljung-Box")
+print("Test Ljung-Box na autokorelację reszt:")
+print(box_test_result)
+
+# Wizualizacja ACF reszt
+acf(arima_model$residuals, main = "Autokorelacja Reszt ARIMA")
+
+# Wizualizacja PACF reszt
+pacf(arima_model$residuals, main = "Częściowa Autokorelacja Reszt ARIMA")
+
+# Histogram reszt
+hist(arima_model$residuals, main = "Histogram Reszt ARIMA", xlab = "Reszty")
 
 
 # Prognozowanie
@@ -389,7 +429,7 @@ print(forecasted_values)
 
 # Wizualizacja
 plot(forecasted_values,
-     main = paste("Prognoza Temperatury (różnicowanie =", diff_count, ")"),
+     main = paste("Prognoza Temperatury (ARIMA, różnicowanie =", diff_count, ")"),
      xlab = "Czas",
      ylab = "Temperatura (°C)",
      col = "blue",
@@ -400,13 +440,31 @@ plot(forecasted_values,
      cex.lab = 1.1,
      cex.axis = 1.0,
      lwd = 1.5,
-     ylim = range(c(forecasted_values$lower, forecasted_values$upper, temperature_data)) # Dostosowanie zakresu Y
+     ylim = range(c(forecasted_values$lower, forecasted_values$upper, temperature_data_arima)) # Dostosowanie zakresu Y
 )
-
 
 # ------------------------------------------------------------------------------
 # 9. Modelowanie szeregów czasowych - Model ETS
 # ------------------------------------------------------------------------------
+
+# Zmiana: Sprawdzenie równomierności danych przed ETS
+time_diffs <- diff(weather_data$date)
+unique_diffs <- unique(time_diffs)
+print("Unikalne interwały czasowe między obserwacjami (dla ETS):")
+print(unique_diffs)
+
+expected_interval <- as.difftime(1, units = "hours")
+tolerance <- as.difftime(1, units = "mins") # Poprawna jednostka: "mins"
+
+if (length(unique_diffs) > 1 || any(abs(unique_diffs - expected_interval) > tolerance)) {
+  warning("Dane dla modelu ETS wydają się nierównomiernie rozłożone w czasie lub mają nietypowe interwały. Rozważ ich przetworzenie.")
+}
+
+# Sprawdzenie i ewentualna imputacja brakujących danych
+if(any(is.na(weather_data$temperature_2m))) {
+  warning("W danych temperatury wykryto brakujące wartości. Zastosowano prostą imputację (ostatnia obserwacja przeniesiona).")
+  weather_data$temperature_2m <- zoo::na.locf(weather_data$temperature_2m)
+}
 
 temperature_data_ts <- ts(weather_data$temperature_2m, frequency = 24)
 
@@ -423,12 +481,12 @@ forecast_ets_df <- data.frame(
   upper_95 = as.numeric(forecast_ets$upper[, "95%"])
 )
 
-# Zakresu dat dla wykresu - skupienie na ostatnich danych i prognozie
+# Zakres dat dla wykresu - skupienie na ostatnich danych i prognozie
 last_history_date <- tail(weather_data$date, 1)
 start_plot_date <- last_history_date - days(30) #ostatnie 30 dni historii
 end_plot_date <- tail(forecast_ets_df$date, 1)
 
-# Kolumny w weather_data muszą być klasy POSIXct
+# Upewnienie się, że kolumny dat są w odpowiednim formacie
 if (!inherits(weather_data$date, "POSIXct")) {
   weather_data$date <- as.POSIXct(weather_data$date)
 }
