@@ -29,7 +29,6 @@ use_python(Sys.which("python3"))
 py_config()
 use_virtualenv("r-reticulate", required = TRUE)
 
-
 # Ładowanie bibliotek
 library(ggplot2)
 library(ggfortify)
@@ -41,7 +40,6 @@ library(forecast)
 library(urca)
 library(prophet)
 library(plotly)
-
 
 # ------------------------------------------------------------------------------
 # 2. Pobieranie danych pogodowych z API Open-Meteo
@@ -299,11 +297,11 @@ model_np <- create_model()
 metrics_np <- model_np$fit(df_prophet_np_pd, freq = "H")
 print(metrics_np)
 
-# Tworzymy przyszłe daty ręcznie (168 godzin do przodu)
+# Tworzenie przyszłych dat (168 godzin do przodu)
 last_date <- max(df_prophet_np$ds)
 future_dates <- seq.POSIXt(from = as.POSIXct(last_date) + 3600, by = "hour", length.out = 168)
 
-# Tworzymy DataFrame przyszłych dat z regresorami (tu średnie wartości)
+# Przyszłye daty z regresorami (tu średnie wartości)
 future_regressors_df <- data.frame(
   ds = future_dates,
   relative_humidity = mean(df_prophet_np$relative_humidity, na.rm = TRUE),
@@ -399,7 +397,7 @@ print(plot_components_prophet)
 # 8. Modelowanie szeregów czasowych - ARIMA
 # ------------------------------------------------------------------------------
 
-# Zmiana:Nie konwertuję daty na Date, zachowujemy POSIXct
+# Nie konwertuję daty na Date, zachowujemy POSIXct
 temperature_data_arima <- weather_data$temperature_2m
 
 # Funkcja sprawdzająca stacjonarność (z automatycznym wyborem opóźnień)
@@ -445,7 +443,7 @@ while (!is_stationary_adf(na.omit(temp_data_stationary)) && diff_count < max_dif
   print(paste("Dane zostały zróżnicowane po raz", diff_count))
 }
 
-# Zmiana: Ostrzeżenie, jeśli nie osiągnięto stacjonarności
+# Ostrzeżenie, jeśli nie osiągnięto stacjonarności
 if (!is_stationary_adf(na.omit(temp_data_stationary))) {
   warning("Nie osiągnięto stacjonarności szeregu czasowego temperatury po maksymalnie ", max_diff, " różnicowaniach (test ADF z AIC).")
 } else if (diff_count == 0) {
@@ -503,7 +501,7 @@ plot(forecasted_values,
 # 9. Modelowanie szeregów czasowych - Model ETS
 # ------------------------------------------------------------------------------
 
-# Zmiana: Sprawdzenie równomierności danych przed ETS
+# Sprawdzenie równomierności danych przed ETS
 time_diffs <- diff(weather_data$date)
 unique_diffs <- unique(time_diffs)
 print("Unikalne interwały czasowe między obserwacjami (dla ETS):")
