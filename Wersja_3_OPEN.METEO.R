@@ -18,12 +18,17 @@
 # install.packages("prophet")
 # install.packages("reticulate")
 # reticulate::install_python()
+#py_install(c("neuralprophet", "torch", "pytorch_lightning"), pip = TRUE)
 #reticulate::py_install("neuralprophet", upgrade = TRUE)
+#reticulate::py_install("ipython", pip = TRUE)
+#install.packages("plotly")
 
 # Ustawienie Pythona dla reticulate
 library(reticulate)
 use_python(Sys.which("python3"))
 py_config()
+use_virtualenv("r-reticulate", required = TRUE)
+
 
 # Ładowanie bibliotek
 library(ggplot2)
@@ -35,7 +40,8 @@ library(lubridate)
 library(forecast)
 library(urca)
 library(prophet)
-library(neuralprophet)
+library(plotly)
+
 
 # ------------------------------------------------------------------------------
 # 2. Pobieranie danych pogodowych z API Open-Meteo
@@ -259,53 +265,103 @@ yearly_soil_temp_plot <- ggplot(yearly_data, aes(x = year, y = avg_soil_temp)) +
 print(yearly_soil_temp_plot)
 
 # ------------------------------------------------------------------------------
-# 6. Modelowanie szeregów czasowych - NeuralProphet Nieskończony :(
+# 6. Modelowanie szeregów czasowych - NeuralProphet
 # ------------------------------------------------------------------------------
 
 np <- reticulate::import("neuralprophet")
 pd <- reticulate::import("pandas", convert = FALSE)
 
+# Przygotowanie danych
 df_prophet_np <- weather_data %>%
   select(date, temperature_2m, relative_humidity_2m, precipitation) %>%
   rename(ds = date, y = temperature_2m, relative_humidity = relative_humidity_2m, precipitation = precipitation)
 
-# Przekonwertuj DataFrame R na DataFrame Pandas
+# Konwersja na pandas DataFrame
 df_prophet_np_pd <- reticulate::r_to_py(df_prophet_np)
-
-# Jawna konwersja kolumny 'ds' na datetime64[ns]
 df_prophet_np_pd$ds <- pd$to_datetime(df_prophet_np_pd$ds)
 
-# Inicjalizacja i dopasowanie modelu NeuralProphet z regresorami
-model_np <- np$NeuralProphet(
-  growth = "linear",
-  yearly_seasonality = TRUE,
-  weekly_seasonality = TRUE,
-  daily_seasonality = TRUE
-)
-# Dodanie regresorów
-model_np$add_regressor("relative_humidity", standardize = "auto")
-model_np$add_regressor("precipitation", standardize = "auto")
+# Funkcja tworząca i zwracająca nowy model z regresorami
+create_model <- function() {
+  model <- np$NeuralProphet(
+    growth = "linear",
+    yearly_seasonality = TRUE,
+    weekly_seasonality = TRUE,
+    daily_seasonality = TRUE,
+    quantiles = c(0.025, 0.975)
+  )
+  model$add_future_regressor("relative_humidity")
+  model$add_future_regressor("precipitation")
+  return(model)
+}
 
+# Utworzenie modelu i "trening"
+model_np <- create_model()
 metrics_np <- model_np$fit(df_prophet_np_pd, freq = "H")
 print(metrics_np)
-# Tworzenie przyszłych danych
-future_np_pd <- model_np$make_future_dataframe(df_prophet_np_pd, periods = 168)
 
-# Prognozowanie
-forecast_np_pd <- model_np$predict(future_np_pd)
+# Tworzymy przyszłe daty ręcznie (168 godzin do przodu)
+last_date <- max(df_prophet_np$ds)
+future_dates <- seq.POSIXt(from = as.POSIXct(last_date) + 3600, by = "hour", length.out = 168)
 
-# Konwersja wyników Pandas DataFrame z powrotem do R DataFrame
+# Tworzymy DataFrame przyszłych dat z regresorami (tu średnie wartości)
+future_regressors_df <- data.frame(
+  ds = future_dates,
+  relative_humidity = mean(df_prophet_np$relative_humidity, na.rm = TRUE),
+  precipitation = mean(df_prophet_np$precipitation, na.rm = TRUE)
+)
+
+# Połączenie danych historycznych i przyszłych
+df_all <- bind_rows(df_prophet_np, future_regressors_df)
+df_all_pd <- reticulate::r_to_py(df_all)
+df_all_pd$ds <- pd$to_datetime(df_all_pd$ds)
+
+# Predykcja
+forecast_np_pd <- model_np$predict(df_all_pd)
 forecast_np <- reticulate::py_to_r(forecast_np_pd)
 
 print("Prognoza temperatury na najbliższe 7 dni (godzinowo) przy użyciu modelu NeuralProphet z regresorami:")
 print(head(forecast_np))
+# Oddzielenie danych prognozowanych
+forecast_only <- forecast_np %>%
+  filter(ds >= min(future_dates))
 
-# Wizualizacja
-plot_forecast_np <- np$plot(forecast_np_pd)
-print(plot_forecast_np)
+# Wizualizacja - Prognoza temperatury
+forecast_plot <- ggplot(forecast_only, aes(x = ds, y = yhat1)) +
+  geom_line(color = "red") +
+  labs(title = "Prognoza temperatury na kolejne 7 dni (godzinowo)", x = "Data", y = "Prognozowana temperatura (°C)") +
+  theme_minimal()
+print(forecast_plot)
 
-plot_components_np <- np$plot_components(forecast_np_pd)
-print(plot_components_np)
+# Prognoza z niepewnością (poprawione nazwy kolumn)
+if ("yhat1 2.5%" %in% names(forecast_only) && "yhat1 97.5%" %in% names(forecast_only)) {
+  forecast_uncertainty_plot <- ggplot(forecast_only, aes(x = ds)) +
+    geom_line(aes(y = yhat1), color = "blue") +
+    geom_ribbon(aes(ymin = `yhat1 2.5%`, ymax = `yhat1 97.5%`), alpha = 0.2, fill = "lightblue") +
+    labs(title = "Prognoza temperatury z przedziałem niepewności", x = "Data", y = "Temperatura (°C)") +
+    theme_minimal()
+  print(forecast_uncertainty_plot)
+}
+
+
+# Wizualizacje
+
+#Główna prognoza czasowa
+#plot_forecast_np <- model_np$plot(forecast_np_pd)
+
+#json_forecast_str <- plot_forecast_np$to_json()
+#plot_forecast_list <- jsonlite::fromJSON(json_forecast_str, simplifyVector = FALSE)
+#plot_forecast_obj <- plotly::plotly_build(plot_forecast_list)
+#htmlwidgets::saveWidget(plot_forecast_obj, "plot_forecast.html")
+#browseURL("plot_forecast.html")
+
+#Komponenty prognozy
+#plot_components_np <- model_np$plot_components(forecast_np_pd)
+
+#json_components_str <- plot_components_np$to_json()
+#plot_components_list <- jsonlite::fromJSON(json_components_str, simplifyVector = FALSE)
+#plot_components_obj <- plotly::plotly_build(plot_components_list)
+#htmlwidgets::saveWidget(plot_components_obj, "plot_components.html")
+#browseURL("plot_components.html")
 
 # ------------------------------------------------------------------------------
 # 7. Modelowanie szeregów czasowych - Klasyczny Prophet
