@@ -18,6 +18,7 @@
 # install.packages("prophet")
 # install.packages("reticulate")
 # reticulate::install_python()
+#install.packages("padr")
 #py_install(c("neuralprophet", "torch", "pytorch_lightning"), pip = TRUE)
 #reticulate::py_install("neuralprophet", upgrade = TRUE)
 #reticulate::py_install("ipython", pip = TRUE)
@@ -27,7 +28,12 @@
 library(reticulate)
 use_python(Sys.which("python3"))
 py_config()
-use_virtualenv("r-reticulate", required = TRUE)
+if ("r-reticulate" %in% reticulate::virtualenv_list()) {
+  reticulate::use_virtualenv("r-reticulate", required = TRUE)
+  cat("Użyto istniejącego środowiska wirtualnego 'r-reticulate'.\n")
+} else {
+  warning("Środowisko wirtualne 'r-reticulate' nie zostało znalezione. \nUpewnij się, że zostało ono utworzone za pomocą: \nreticulate::virtualenv_create('r-reticulate')")
+}
 
 # Ładowanie bibliotek
 library(ggplot2)
@@ -40,12 +46,12 @@ library(forecast)
 library(urca)
 library(prophet)
 library(plotly)
+library(padr)
 
 # ------------------------------------------------------------------------------
 # 2. Pobieranie danych pogodowych z API Open-Meteo
 # ------------------------------------------------------------------------------
 
-# Definiowanie parametrów zapytania do API 
 url <- "https://archive-api.open-meteo.com/v1/archive"
 latitude <- 52.4064  # Szerokość geograficzna Poznania
 longitude <- 16.9252 # Długość geograficzna Poznania
@@ -53,7 +59,6 @@ start_date <- "2014-01-01"
 end_date <- "2024-12-31"
 hourly_data <- "temperature_2m,relative_humidity_2m,precipitation,soil_temperature_0_to_7cm"
 
-# Funkcja do pobierania danych pogodowych
 get_weather_data <- function(latitude, longitude, start_date, end_date, hourly_data) {
   params <- list(
     latitude = latitude,
@@ -68,14 +73,12 @@ get_weather_data <- function(latitude, longitude, start_date, end_date, hourly_d
   if (status_code(response) == 200) {
     data <- fromJSON(content(response, "text"), flatten = TRUE)
     
-    # Zmiana: Sprawdzenie, czy 'data' i 'data$hourly' istnieją
     if (is.null(data$hourly)) {
       stop("Odpowiedź z API nie zawiera oczekiwanych danych godzinowych ('data$hourly').")
     }
     
     df <- as.data.frame(data$hourly)
     
-    # Zmiana: Walidacja formatu daty
     tryCatch({
       df$date <- ymd_hm(df$time)
     }, error = function(e) {
@@ -97,14 +100,11 @@ get_weather_data <- function(latitude, longitude, start_date, end_date, hourly_d
   }
 }
 
-# Pobranie danych pogodowych
 weather_data <- get_weather_data(latitude, longitude, start_date, end_date, hourly_data)
 
-# Wyświetlenie pierwszych wierszy pobranych danych
 print("Pierwsze wiersze pobranych danych:")
 print(head(weather_data))
 
-# Sprawdzenie brakujących danych na wczesnym etapie
 print("Liczba brakujących wartości w każdej kolumnie po pobraniu danych:")
 print(sapply(weather_data, function(x) sum(is.na(x))))
 
@@ -122,7 +122,7 @@ summary(weather_data)
 
 # Agregacja miesięczna 
 monthly_data <- weather_data %>%
-  mutate(year_month = format(date, "%Y-%m")) %>%
+  mutate(year_month = floor_date(date, "month")) %>%
   group_by(year_month) %>%
   summarise(
     avg_temp = mean(temperature_2m, na.rm = TRUE),
@@ -156,6 +156,15 @@ print(head(yearly_data))
 # ------------------------------------------------------------------------------
 # 5. Wizualizacja danych
 # ------------------------------------------------------------------------------
+
+kolory <- list(
+  wilgotnosc = "mediumseagreen",
+  opady = "deepskyblue3",
+  temperatura = "firebrick2",
+   gleba = "sienna3",
+  t_plus = "tomato3",
+  t_minus = "dodgerblue4"
+)
 
 # 5.1. Wykresy przebiegu czasowego (godzinowo)
 print("Wykresy godzinowe:")
@@ -191,6 +200,7 @@ plot_temp_monthly <- ggplot(monthly_data, aes(x = year_month, y = avg_temp)) +
   geom_line(group = 1) +
   geom_point() +
   labs(title = "Średnia miesięczna temperatura w Poznaniu (2014-2024)", x = "Miesiąc", y = "Średnia temperatura (°C)") +
+  scale_x_datetime(date_breaks = "1 year", date_labels = "%Y") +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 print(plot_temp_monthly)
@@ -198,6 +208,7 @@ print(plot_temp_monthly)
 plot_precipitation_monthly <- ggplot(monthly_data, aes(x = year_month, y = total_precipitation)) +
   geom_bar(stat = "identity") +
   labs(title = "Suma miesięcznych opadów w Poznaniu (2014-2024)", x = "Miesiąc", y = "Suma opadów (mm)") +
+  scale_x_datetime(date_breaks = "1 year", date_labels = "%Y") +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 print(plot_precipitation_monthly)
@@ -215,52 +226,52 @@ print(paste("Rok z największą sumą opadów:", wettest_year$year, "z sumą opa
 
 # Średnia roczna temperatura 
 yearly_temp_plot <- ggplot(yearly_data, aes(x = year, y = avg_temp)) +
-  geom_bar(stat = "identity", fill = "skyblue") +
+  geom_bar(stat = "identity", fill = kolory$temperatura) + 
   labs(title = "Średnia roczna temperatura w Poznaniu (2014-2024)", x = "Rok", y = "Średnia temperatura (°C)") +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
-print(yearly_temp_plot)
+yearly_temp_plot
 
 # Roczna suma opadów 
 yearly_precip_plot <- ggplot(yearly_data, aes(x = year, y = total_precipitation)) +
-  geom_bar(stat = "identity", fill = "lightgreen") +
+  geom_bar(stat = "identity", fill = kolory$opady ) +
   labs(title = "Roczna suma opadów w Poznaniu (2014-2024)", x = "Rok", y = "Suma opadów (mm)") +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
-print(yearly_precip_plot)
+yearly_precip_plot
 
 # Minimalna roczna temperatura 
 
 yearly_min_temp_plot <- ggplot(yearly_data, aes(x = year, y = min_temp)) +
-  geom_bar(stat = "identity", fill = "lightblue") +
+  geom_bar(stat = "identity", fill = kolory$t_minus ) +
   labs(title = "Minimalna roczna temperatura w Poznaniu (2014-2024)", x = "Rok", y = "Minimalna temperatura (°C)") +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
-print(yearly_min_temp_plot)
+yearly_min_temp_plot
 
 # Maksymalna roczna temperatura
 yearly_max_temp_plot <- ggplot(yearly_data, aes(x = year, y = max_temp)) +
-  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_bar(stat = "identity", fill = kolory$t_plus) +
   labs(title = "Maksymalna roczna temperatura w Poznaniu (2014-2024)", x = "Rok", y = "Maksymalna temperatura (°C)") +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
-print(yearly_max_temp_plot)
+yearly_max_temp_plot
 
 # Średnia roczna wilgotność względna
 yearly_humidity_plot <- ggplot(yearly_data, aes(x = year, y = avg_humidity)) +
-  geom_bar(stat = "identity", fill = "gray") +
+  geom_bar(stat = "identity", fill = kolory$wilgotnosc ) +
   labs(title = "Średnia roczna wilgotność względna w Poznaniu (2014-2024)", x = "Rok", y = "Średnia wilgotność (%)") +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
-print(yearly_humidity_plot)
+yearly_humidity_plot
 
 # Średnia roczna temperatura gleby
 yearly_soil_temp_plot <- ggplot(yearly_data, aes(x = year, y = avg_soil_temp)) +
-  geom_bar(stat = "identity", fill = "orange") +
+  geom_bar(stat = "identity", fill = kolory$gleba) +
   labs(title = "Średnia roczna temperatura gleby (0-7 cm) w Poznaniu (2014-2024)", x = "Rok", y = "Średnia temperatura gleby (°C)") +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
-print(yearly_soil_temp_plot)
+yearly_soil_temp_plot
 
 # ------------------------------------------------------------------------------
 # 6. Modelowanie szeregów czasowych - NeuralProphet
@@ -340,27 +351,6 @@ if ("yhat1 2.5%" %in% names(forecast_only) && "yhat1 97.5%" %in% names(forecast_
   print(forecast_uncertainty_plot)
 }
 
-
-# Wizualizacje
-
-#Główna prognoza czasowa
-#plot_forecast_np <- model_np$plot(forecast_np_pd)
-
-#json_forecast_str <- plot_forecast_np$to_json()
-#plot_forecast_list <- jsonlite::fromJSON(json_forecast_str, simplifyVector = FALSE)
-#plot_forecast_obj <- plotly::plotly_build(plot_forecast_list)
-#htmlwidgets::saveWidget(plot_forecast_obj, "plot_forecast.html")
-#browseURL("plot_forecast.html")
-
-#Komponenty prognozy
-#plot_components_np <- model_np$plot_components(forecast_np_pd)
-
-#json_components_str <- plot_components_np$to_json()
-#plot_components_list <- jsonlite::fromJSON(json_components_str, simplifyVector = FALSE)
-#plot_components_obj <- plotly::plotly_build(plot_components_list)
-#htmlwidgets::saveWidget(plot_components_obj, "plot_components.html")
-#browseURL("plot_components.html")
-
 # ------------------------------------------------------------------------------
 # 7. Modelowanie szeregów czasowych - Klasyczny Prophet
 # ------------------------------------------------------------------------------
@@ -397,64 +387,17 @@ print(plot_components_prophet)
 # 8. Modelowanie szeregów czasowych - ARIMA
 # ------------------------------------------------------------------------------
 
-# Nie konwertuję daty na Date, zachowujemy POSIXct
 temperature_data_arima <- weather_data$temperature_2m
 
-# Funkcja sprawdzająca stacjonarność (z automatycznym wyborem opóźnień)
-is_stationary_adf <- function(ts, alpha = 0.05) {
-  if (length(na.omit(ts)) < 2) {
-    warning("Zbyt mało danych do przeprowadzenia testu ADF.")
-    return(FALSE) # Uznaję za niestacjonarne, aby uniknąć błędów
-  }
-  adf_result <- tryCatch({
-    ur.df(ts, type = "drift", selectlags = "AIC")
-  }, error = function(e) {
-    warning(paste("Błąd podczas wykonywania ur.df:", e$message))
-    return(NULL) # W przypadku błędu zwracam NULL
-  })
-  
-  if (is.null(adf_result) || any(is.na(adf_result@teststat)) || is.null(adf_result@cval)) {
-    warning("Nie można było przeprowadzić testu ADF lub brak wyników.")
-    return(FALSE) # Uznaję za niestacjonarne
-  }
-  
-  critical_value_row <- rownames(adf_result@cval) == paste0(alpha * 100, "%")
-  if (!any(critical_value_row)) {
-    warning(paste("Nie znaleziono wartości krytycznej dla alpha =", alpha))
-    return(FALSE) # Uznaję za niestacjonarne
-  }
-  critical_value <- adf_result@cval[critical_value_row, 1]
-  test_stat <- adf_result@teststat[1]
-  
-  return(test_stat < critical_value)
-}
+print("Automatyczne dopasowywanie modelu ARIMA...")
+arima_model <- auto.arima(
+  temperature_data_arima,
+  seasonal = TRUE, # Pozwalamy na modelowanie sezonowości, co jest kluczowe dla danych godzinowych
+  stepwise = TRUE, # Użyj przybliżenia stepwise dla szybkości
+  trace = TRUE     # Pokaż kroki dopasowywania modelu
+)
 
-# Przygotowanie do różnicowania
-temp_data_stationary <- temperature_data_arima
-diff_count <- 0
-max_diff <- 2  # Maksymalna liczba różnicowań
-
-# Automatyczne różnicowanie aż do stacjonarności lub do limitu
-while (!is_stationary_adf(na.omit(temp_data_stationary)) && diff_count < max_diff) {
-  print(paste("Test ADF (AIC), różnicowanie =", diff_count))
-  temp_data_stationary <- diff(temp_data_stationary)
-  temp_data_stationary <- na.omit(temp_data_stationary)
-  diff_count <- diff_count + 1
-  print(paste("Dane zostały zróżnicowane po raz", diff_count))
-}
-
-# Ostrzeżenie, jeśli nie osiągnięto stacjonarności
-if (!is_stationary_adf(na.omit(temp_data_stationary))) {
-  warning("Nie osiągnięto stacjonarności szeregu czasowego temperatury po maksymalnie ", max_diff, " różnicowaniach (test ADF z AIC).")
-} else if (diff_count == 0) {
-  print("Dane są prawdopodobnie stacjonarne (test ADF z AIC).")
-} else {
-  print(paste("Ostateczny poziom różnicowania:", diff_count, "(test ADF z AIC)."))
-}
-
-# Automatyczne dopasowanie modelu ARIMA
-# Zmiana (Sugestia 5b): Nie ustawiamy stałej liczby opóźnień w ur.df, auto.arima sam dobierze p, d, q
-arima_model <- auto.arima(temp_data_stationary)
+print("Wynikowy model ARIMA:")
 print(summary(arima_model))
 
 # Diagnostyka reszt
@@ -481,20 +424,11 @@ hist(arima_model$residuals, main = "Histogram Reszt ARIMA", xlab = "Reszty")
 forecasted_values <- forecast::forecast(arima_model, h = 168)
 print(forecasted_values)
 
-# Wizualizacja
+# Wizualizacja - tytuł wykresu można uprościć
 plot(forecasted_values,
-     main = paste("Prognoza Temperatury (ARIMA, różnicowanie =", diff_count, ")"),
+     main = "Prognoza Temperatury (model auto.arima)",
      xlab = "Czas",
-     ylab = "Temperatura (°C)",
-     col = "blue",
-     fcol = "red",
-     flwd = 2,
-     shadecols = "lightgray",
-     cex.main = 1.2,
-     cex.lab = 1.1,
-     cex.axis = 1.0,
-     lwd = 1.5,
-     ylim = range(c(forecasted_values$lower, forecasted_values$upper, temperature_data_arima)) # Dostosowanie zakresu Y
+     ylab = "Temperatura (°C)"
 )
 
 # ------------------------------------------------------------------------------
@@ -502,27 +436,26 @@ plot(forecasted_values,
 # ------------------------------------------------------------------------------
 
 # Sprawdzenie równomierności danych przed ETS
-time_diffs <- diff(weather_data$date)
-unique_diffs <- unique(time_diffs)
-print("Unikalne interwały czasowe między obserwacjami (dla ETS):")
-print(unique_diffs)
+print("Sprawdzanie i uzupełnianie regularności szeregu czasowego...")
+weather_data_regular <- weather_data %>%
+  pad(interval = "hour")
 
-expected_interval <- as.difftime(1, units = "hours")
-tolerance <- as.difftime(1, units = "mins") # Poprawna jednostka: "mins"
-
-if (length(unique_diffs) > 1 || any(abs(unique_diffs - expected_interval) > tolerance)) {
-  warning("Dane dla modelu ETS wydają się nierównomiernie rozłożone w czasie lub mają nietypowe interwały. Rozważ ich przetworzenie.")
+if (nrow(weather_data_regular) > nrow(weather_data)) {
+  print(paste("Dodano", nrow(weather_data_regular) - nrow(weather_data), "brakujących obserwacji."))
+  weather_data_regular <- weather_data_regular %>%
+    fill_by_prevalent(temperature_2m) 
 }
 
-# Sprawdzenie i ewentualna imputacja brakujących danych
-if(any(is.na(weather_data$temperature_2m))) {
-  warning("W danych temperatury wykryto brakujące wartości. Zastosowano prostą imputację (ostatnia obserwacja przeniesiona).")
-  weather_data$temperature_2m <- zoo::na.locf(weather_data$temperature_2m)
+if(any(is.na(weather_data_regular$temperature_2m))) {
+  warning("W danych temperatury wciąż istnieją braki. Użyto zoo::na.locf.")
+  weather_data_regular$temperature_2m <- zoo::na.locf(weather_data_regular$temperature_2m, na.rm = FALSE)
 }
 
-temperature_data_ts <- ts(weather_data$temperature_2m, frequency = 24)
+temperature_data_ts <- ts(weather_data_regular$temperature_2m, frequency = 168)
 
+print("Dopasowywanie modelu ETS...")
 ets_model <- ets(temperature_data_ts)
+print(summary(ets_model))
 forecast_ets <- forecast(ets_model, h = 168)
 
 # Ramka danych dla prognozy ETS
